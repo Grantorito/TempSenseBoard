@@ -6,15 +6,13 @@
 #include <CANSAME5x.h>
 #include <CANSAME5x_port.h>
 
-#define PIN_CAN_STANDBY 1
-#define PIN_CAN_BOOSTEN 2
+CANSAME5x CAN;
 
 //Baudrate is set 
 #define Baudrate 9600
 
-
 //Static addresses for ADC I2C
-#define ADC1 0
+
 #define BytesRequest 2 //Request 2 bytes from the ADC
 #define ADCBitSize 12 //predetermined setting for amount of bits sent
 #define MaxBitSize 16 // Max size of the ADC
@@ -25,7 +23,6 @@
 //SYNC pinout
 #define SYNC 13
 
-
 int16_t VtoTforF24(uint16_t x)//
 {
   int I =-474.75*pow(x,6)+4616.6*pow(x,5)-17903*pow(x,4)+34634*pow(x,3)-33495*pow(x,2)+13014*x;
@@ -34,8 +31,10 @@ int16_t VtoTforF24(uint16_t x)//
 
 void setup()
 {
+ int addresswire = 0;
     //Start serial communication at some baud
   Serial.begin(Baudrate);
+
   //       SPI Set up
   pinMode(SYNC,OUTPUT);//sets the MUX sync bit to pin 13
   digitalWrite(SYNC,HIGH);//sets to high to intialize SPI
@@ -76,20 +75,58 @@ Default config is 10010000, or 144 meaning continous conversion, at 12 bits, and
     delay(1);
 
 //writes to the ADC and sends the config bit
-  Wire.beginTransmission(ADC1);
+
+  Wire.beginTransmission(addresswire);
   Wire.write(config);
   Wire.endTransmission();
 
     
  SPI.begin();
       delay(1);
+/*
+Code needs to transmit this into a CAN frames
+Frame - 1: Contains the Address Claim at 200 ms and 8 bytes
+
+B1-B3  -  Identifier for the address claim (default is 0xF3)
+
+B4  -  BMS Target Address (default 0xF3)
+
+B5 -  Thermistor Module(up to 3)
+
+B6  -  constant (0x40)
+
+B7  -  constant (0x1E)
+
+B8 -  constant (0x90)
+*/
+uint32_t Identifieraddress = 0xF3;
+
+  if(CAN.begin(5)){
+Serial.print("CAN failed to intialize");
+   }
+CAN.beginPacket(0x18EEFF80);
+CAN.write(Identifieraddress);
+CAN.write(0);
+CAN.write(0);
+CAN.write(0x01);
+CAN.write(0x40);
+CAN.write(0x1E);
+CAN.write(0x90);
+CAN.endPacket();
+CAN.end();
 
 }
 
 void loop() {
 uint8_t AMux = 0; //intializes the address of the Mux at 0
+int addresswire = 0;
+/*
+ 
+Insert a zero matrix 2x16 to Store the values of the thermistors ID and there temp
 
-  while(1);
+*/
+
+  while(1);// change this to a for loop that interates through the matrix and calculates cel
 {
   delay(1);
   
@@ -126,7 +163,7 @@ uint8_t AMux = 0; //intializes the address of the Mux at 0
 
   */
   SPI.endTransaction(); //end SPI
-   digitalWrite(SYNC,HIGH); // indicates end of SYNC
+  digitalWrite(SYNC,HIGH); // indicates end of SYNC
 
   if(AMux == 15){ // cycles the addresses of SPI
     AMux = 0;
@@ -139,7 +176,7 @@ uint8_t AMux = 0; //intializes the address of the Mux at 0
     Serial.print("I2C failed to conect to ADC");
   }
   //Request 2 bytes from the specified address
-  Wire.requestFrom(ADC1,BytesRequest); 
+  Wire.requestFrom(addresswire,BytesRequest); 
   int16_t remaining = BytesRequest;
   uint16_t package = 0;
 
@@ -161,7 +198,20 @@ uint16_t mask = 1 << (ADCBitSize);// create a mask that is the size of the sette
   }
 uint16_t volt = package*LSBVolt/PGA;// formula to convert the package to volts
 
-   uint8_t cel = VtoTforF24(volt);
+   int8_t cel = VtoTforF24(volt);
+/*
+Assing the address and value of c to the thermistor matrix
+
+
+end the for loop
+
+return func the average of the matrix
+
+return func lowest temp 
+
+return the highest temp and its ID
+
+*/
 
 /*
   //Send the temperature in degrees C and F to the serial monitor
@@ -169,12 +219,42 @@ uint16_t volt = package*LSBVolt/PGA;// formula to convert the package to volts
   Serial.print("C ");
  */
 /*
-Code needs to transmit this into a CAN frames
-Frame - 1: Contains the Address Claim at 200 ms 
+CAN
 
-Frame - 2: Contains the Thermistor for 
+Frame - 2: Contains the Thermistor Module Broadcast with 8 bytes at 100 ms
+
+B1- Thermistor Molde # 
+
+B2  -  Lowest Thermistor Value (in C)
+
+B3  -  Highest Thermistor Value (in C)
+
+B4  -  Average Thermistor Temp (in C)
+
+B5  -  Number of Thermistors Enabled (send 0x80 if theres a fault)
+
+B6  -  Highest Thermistor ID (Zero Based)
+
+B7  -  Highest Thermistor ID on the module (Zero Based)
+
+B8  -  Lowest Thermistor ID on the module (Zero Based)
 
 */
+
+
+if(CAN.begin(10)){
+Serial.print("CAN failed to intialize");
+}
+CAN.beginPacket(0x1839F380);
+CAN.write(0);
+CAN.write(0);
+CAN.write(0);
+CAN.write(0);
+CAN.write(0);
+CAN.write(0);
+CAN.write(0);
+CAN.endPacket();
+CAN.end();
   }
 }
 
