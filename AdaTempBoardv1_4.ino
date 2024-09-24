@@ -8,6 +8,8 @@
 
 CANSAME5x CAN;
 
+#define DEBUG 1
+
 //Baudrate is set 
 #define Baudrate 9600
 
@@ -15,7 +17,7 @@ CANSAME5x CAN;
 #define ADC_ADDRESS 0b11010001 // ADC datasheet 5.3.1
 
 #define BytesRequest 2 //Request 2 bytes from the ADC
-#define ADCBitSize 12 //predetermined setting for amount of bits sent
+#define ADCBitSize 12 //predetermined setting for the amount of bits sent
 #define MaxBitSize 16 // Max size of the ADC
 
 #define LSBVolt .001  //the voltage of LSB for 12bit
@@ -24,6 +26,7 @@ CANSAME5x CAN;
 //SYNC pinout
 #define SYNC 13
 
+#define THERM_MODULE 1
 #define THERMISTOR_NUM 16
 
 struct thermistor {
@@ -31,8 +34,51 @@ struct thermistor {
   int8_t temp = 0;
 };
 
+struct CANDATA{
+int8_t AVERAGE_TEMP,HIGH_TEMP,HIGH_ID,LOW_TEMP,LOW_ID;
+};
+
 // init array of thermistor structs that Store the values of the thermistors ID and there temp
 thermistor matrix[THERMISTOR_NUM];
+
+void CalcAVERAGE(int8_t *AVERAGE_TEMP){
+int8_t sum;
+  for(uint8_t i = 0;i < THERMISTOR_NUM; ++i){
+  sum += matrix[i].temp;
+  }
+  *AVERAGE_TEMP = (sum/THERMISTOR_NUM);
+}
+
+
+//==================================================================================================
+void CalcHIGH(int8_t *HIGH_TEMP, int8_t *HIGH_ID){
+int8_t Temp,Temp_ID;
+  for (uint8_t i = 0;i < THERMISTOR_NUM; ++i){
+    if(matrix[i].temp > Temp){
+
+      Temp = matrix[i].temp;
+      Temp_ID = i;
+   }
+  }
+  *HIGH_TEMP = Temp;
+  *HIGH_ID = Temp_ID;
+}
+//=================================================================================================
+
+//=================================================================================================
+void CalcLOW(int8_t *LOW_TEMP, int8_t *LOW_ID, int8_t *AVERAGE_TEMP){
+int8_t Temp = *AVERAGE_TEMP;
+int8_t Temp_ID;
+  for (uint8_t i = 0;i < THERMISTOR_NUM; ++i ){
+    if(matrix[i].temp < Temp){
+      Temp = matrix[i].temp;
+      Temp_ID = i;
+    } 
+  }
+  *LOW_TEMP = Temp;
+  *LOW_ID = Temp_ID;
+}
+//=================================================================================================
 
 // ================================================================================================
 
@@ -52,7 +98,7 @@ void setup()
 
     // SPI Set up
     pinMode(SYNC,OUTPUT);//sets the MUX sync bit to pin 13
-    digitalWrite(SYNC,HIGH);//sets to high to intialize SPI
+    digitalWrite(SYNC,HIGH);//sets to high to initialize SPI
 
     // CAN Setup
     pinMode(PIN_CAN_STANDBY,OUTPUT);//CAN Standby 
@@ -66,7 +112,7 @@ void setup()
     /*
     Consists of bits RDY,C1,C2,O/C,S1,S0,G1,G0
 
-    RDY - in writing intiates a new conversation with 1, but has no affect in in continous conversion
+    RDY - in writing initiates a new conversation with 1, but has no effect in in continuous conversion
 
     C1-C0 - Channel select, so should be left 00
 
@@ -83,7 +129,7 @@ void setup()
             10 = 4 V/V
             11 = 8 V/V
 
-    Default config is 10010000, or 144 meaning continous conversion, at 12 bits, and 1 V/V gain
+    Default config is 10010000, or 144 meaning continuous conversion, at 12 bits, and 1 V/V gain
 
     */
 
@@ -104,7 +150,7 @@ void setup()
     Code needs to transmit this into a CAN frames
     Frame - 1: Contains the Address Claim at 200 ms and 8 bytes
 
-    B1-B3  -  Identifier for the address claim (default is 0xF3)
+    B1-B3  -  Identifier for the address claim (default is 0xF30080)
 
     B4  -  BMS Target Address (default 0xF3)
 
@@ -124,10 +170,10 @@ void setup()
     }
 
     CAN.beginPacket(0x18EEFF80);
-    CAN.write(Identifieraddress);
-    CAN.write(0);
-    CAN.write(0);
-    CAN.write(0x01);
+    CAN.write(0xF3);
+    CAN.write(0x00);
+    CAN.write(0x80);
+    CAN.write(THERM_MODULE);
     CAN.write(0x40);
     CAN.write(0x1E);
     CAN.write(0x90);
@@ -141,10 +187,9 @@ void setup()
 void loop() 
 {
 
-    uint8_t AMux = 0; //intializes the address of the Mux at 0
-    int addresswire = 0;
+    uint8_t AMux = 0; //initializes the address of the Mux at 0
 
-    for(int i = 0; i < THERMISTOR_NUM; ++i)// change this to a for loop that interates through the matrix and calculates cel
+    for(int i = 0; i < THERMISTOR_NUM; ++i)// change this to a for loop that iterates through the matrix and calculates cel
     {
         delay(1);
         
@@ -187,9 +232,9 @@ void loop()
           Serial.print("I2C failed to conect to ADC");
         }
         //Request 2 bytes from the specified address
-        Wire.requestFrom(addresswire,BytesRequest); 
+        Wire.requestFrom(ADC_ADDRESS,BytesRequest); 
         int16_t remaining = BytesRequest;
-        uint16_t package = 0;
+        int16_t package;
 
         while(Wire.available() && --remaining){
         // Get the data in 2 byetes and assign to x and y
@@ -207,16 +252,19 @@ void loop()
           package &= ~(mask);
           mask = mask<<1; //mask gets rid of a leading 1
         }
-        uint16_t volt = package*LSBVolt/PGA;// formula to convert the package to volts
+        int16_t volt = package*(LSBVolt/PGA);// formula to convert the package to volts
 
         int8_t cel = VtoTforF24(volt);
 
         matrix[i].temp = cel;
-
-        /*
-        Assing the address and value of c to the thermistor matrix
-
-
+        matrix[i].ID = i;
+      #if DEBUG
+          //Send the temperature in degrees C an the IDto the serial monitor
+          Serial.println(matrix[i].temp);
+          Serial.print(matrix[i].ID);
+      #endif
+    }
+    /*
         end the for loop
 
         return func the average of the matrix
@@ -226,13 +274,30 @@ void loop()
         return the highest temp and its ID
 
         */
+      int8_t AVERAGE_TEMP,HIGH_TEMP,HIGH_ID,LOW_TEMP,LOW_ID;
 
-        /*
-          //Send the temperature in degrees C and F to the serial monitor
-          Serial.print(c);
-          Serial.print("C ");
-        */
-        /*
+      CalcHIGH(&HIGH_TEMP,&HIGH_ID);
+      CalcAVERAGE(&AVERAGE_TEMP);
+      CalcLOW(&LOW_TEMP,&LOW_ID,&AVERAGE_TEMP);
+      
+
+      int16_t LONG_CHECKSUM = AVERAGE_TEMP + HIGH_TEMP + HIGH_ID +
+                        LOW_ID + LOW_TEMP + THERM_MODULE +
+                        0x39 + 0x08;
+      /*Realistically, this value can never go passed around 667
+      assuming the all temperature is 120C and all 80 thermistors are enabled
+      and we call this module 3
+      */
+      
+      int8_t CHECKSUM;
+      if(LONG_CHECKSUM > pow(2,(sizeof(CHECKSUM)*8)-1)-1){
+        CHECKSUM = pow(2,(sizeof(CHECKSUM)*8)-1)-1;
+      }
+      else{
+        CHECKSUM = (int8_t) LONG_CHECKSUM;
+      }
+
+       /*
         CAN
 
         Frame - 2: Contains the Thermistor Module Broadcast with 8 bytes at 100 ms
@@ -245,31 +310,31 @@ void loop()
 
         B4  -  Average Thermistor Temp (in C)
 
-        B5  -  Number of Thermistors Enabled (send 0x80 if theres a fault)
+        B5 -   Number of Thermistors Enable (Max is 80)
 
-        B6  -  Highest Thermistor ID (Zero Based)
+        B6 -   Highest Thermistor ID (Zero Based)
 
-        B7  -  Highest Thermistor ID on the module (Zero Based)
+        B7  -  Lowest Thermistor ID (Zero Based)
 
-        B8  -  Lowest Thermistor ID on the module (Zero Based)
+        B8  -  Checksum Byte (add all the bytes + 0x39 + length(8))
 
         */
 
-
-        if(CAN.begin(10)){
+        if(CAN.begin(100000)){
         Serial.print("CAN failed to intialize");
         }
         CAN.beginPacket(0x1839F380);
-        CAN.write(0);
-        CAN.write(0);
-        CAN.write(0);
-        CAN.write(0);
-        CAN.write(0);
-        CAN.write(0);
-        CAN.write(0);
+        CAN.write(THERM_MODULE);
+        CAN.write(LOW_TEMP);
+        CAN.write(HIGH_TEMP);
+        CAN.write(AVERAGE_TEMP);
+        CAN.write(THERMISTOR_NUM);
+        CAN.write(HIGH_ID);
+        CAN.write(LOW_ID);
+        CAN.write(CHECKSUM);
         CAN.endPacket();
         CAN.end();
-    }
-
+    
 }
+
 
